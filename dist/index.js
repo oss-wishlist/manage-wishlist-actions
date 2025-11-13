@@ -36220,9 +36220,30 @@ async function createPullRequest(octokit, owner, repo, data, fundingFile, issueN
     }
   }
   
+  // Re-fetch FUNDING.yml from the fork to get the latest SHA (in case it changed)
+  let latestFundingFile = null;
+  if (fundingFile) {
+    try {
+      const { data } = await octokit.rest.repos.getContent({
+        owner: forkOwner,
+        repo: repo,
+        path: filePath,
+        ref: branchName
+      });
+      latestFundingFile = { path: filePath, sha: data.sha, content: data.content };
+      core.info(`Re-fetched ${filePath} from fork branch to get latest SHA`);
+    } catch (err) {
+      if (err.status === 404) {
+        core.info(`${filePath} not found in fork branch; will create it`);
+      } else {
+        throw err;
+      }
+    }
+  }
+  
   // Create or update FUNDING.yml in fork
   const newContent = createFundingContent(
-    fundingFile ? fundingFile.content : null,
+    latestFundingFile ? latestFundingFile.content : (fundingFile ? fundingFile.content : null),
     data.wishlistUrl
   );
   
@@ -36233,7 +36254,7 @@ async function createPullRequest(octokit, owner, repo, data, fundingFile, issueN
     message: fundingFile ? 'Update FUNDING.yml with wishlist link' : 'Add FUNDING.yml with wishlist link',
     content: Buffer.from(newContent).toString('base64'),
     branch: branchName,
-    sha: fundingFile ? fundingFile.sha : undefined
+    sha: latestFundingFile ? latestFundingFile.sha : undefined
   });
   
   core.info(`Created/updated ${filePath} in fork`);
