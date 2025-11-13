@@ -2,6 +2,13 @@
 
 All notable changes to this action will be documented in this file.
 
+## v1.1.2 — 2025-10-31
+
+### Fixed
+- FUNDING.yml now removes old wishlist URLs (GitHub issue URLs and old fulfill URLs) instead of accumulating them. Only the current wishlist URL for the issue is kept in the file.
+
+---
+
 ## v1.1.1 — 2025-10-31
 
 ### Fixed
