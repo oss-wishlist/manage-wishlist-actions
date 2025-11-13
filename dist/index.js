@@ -36070,24 +36070,30 @@ function createFundingContent(existingContent, wishlistUrl) {
     fundingData.custom = [fundingData.custom];
   }
 
-  // Migrate any old GitHub issue URLs to the new fulfill URL format
-  const issueUrlRegex = /https:\/\/github\.com\/oss-wishlist\/wishlists\/issues\/(\d+)/;
-  fundingData.custom = fundingData.custom.map((entry) => {
+  // Remove any old GitHub issue URLs and old fulfill URLs, keeping only the current wishlist URL
+  const issueUrlRegex = /https:\/\/github\.com\/oss-wishlist\/wishlists\/issues\/\d+/;
+  const oldFulfillRegex = /https:\/\/oss-wishlist\.com\/(oss-wishlist\/)?fullfill?\?issue=\d+/;
+  
+  fundingData.custom = fundingData.custom.filter((entry) => {
     if (typeof entry === 'string') {
-      const m = entry.match(issueUrlRegex);
-      if (m) {
-        const issueNum = m[1];
-        const newUrl = `https://oss-wishlist.com/oss-wishlist-website/fullfill?issue=${issueNum}`;
-        core.info(`Migrated FUNDING.yml URL from GitHub issue to fulfill URL: ${entry} -> ${newUrl}`);
-        return newUrl;
+      // Remove old GitHub issue URLs
+      if (issueUrlRegex.test(entry)) {
+        core.info(`Removing old GitHub issue URL: ${entry}`);
+        return false;
+      }
+      // Remove old fulfill URLs (different format or different issue number)
+      if (oldFulfillRegex.test(entry) && entry !== wishlistUrl) {
+        core.info(`Removing old fulfill URL: ${entry}`);
+        return false;
       }
     }
-    return entry;
+    return true;
   });
   
   // Add wishlist URL if not already present
   if (!fundingData.custom.includes(wishlistUrl)) {
     fundingData.custom.push(wishlistUrl);
+    core.info(`Added wishlist URL: ${wishlistUrl}`);
   }
   
   return yaml.dump(fundingData);

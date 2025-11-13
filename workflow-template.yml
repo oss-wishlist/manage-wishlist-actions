@@ -23,7 +23,7 @@ jobs:
       
     steps:
       - name: Manage Wishlist Actions
-        uses: oss-wishlist/manage-wishlist-actions@v1
+        uses: oss-wishlist/manage-wishlist-actions@v1.1.1
         with:
           # IMPORTANT: Use a PAT with 'public_repo' scope stored in secrets
           # The default GITHUB_TOKEN cannot create PRs in other repositories

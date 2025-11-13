@@ -89,8 +89,8 @@ jobs:
       contents: read
     
     steps:
-         - name: Manage Wishlist Actions
-            uses: oss-wishlist/manage-wishlist-actions@v1
+      - name: Manage Wishlist Actions
+        uses: oss-wishlist/manage-wishlist-actions@v1.1.1
         with:
           github-token: ${{ secrets.WISHLIST_BOT_TOKEN }}
 ```
