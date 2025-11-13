@@ -2,6 +2,13 @@
 
 All notable changes to this action will be documented in this file.
 
+## v1.1.1 — 2025-10-31
+
+### Fixed
+- Stale SHA error when updating FUNDING.yml in fork: now re-fetches the file from the fork branch immediately before updating to ensure the SHA matches the latest version.
+
+---
+
 ## v1.1.0 — 2025-10-31
 
 ### Added
