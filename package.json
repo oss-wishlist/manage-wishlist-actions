@@ -6,13 +6,18 @@
   "scripts": {
     "build": "ncc build src/index.js -o dist --source-map --license licenses.txt"
   },
-  "keywords": ["github-action", "funding", "wishlist"],
+  "keywords": [
+    "github-action",
+    "funding",
+    "wishlist"
+  ],
   "author": "oss-wishlist",
   "license": "MIT",
   "dependencies": {
     "@actions/core": "^1.10.1",
     "@actions/github": "^6.0.0",
-    "js-yaml": "^4.1.0"
+    "js-yaml": "^4.1.0",
+    "pg": "^8.16.3"
   },
   "devDependencies": {
     "@vercel/ncc": "^0.38.1"

@@ -6,6 +6,12 @@ inputs:
   github-token:
     description: 'GitHub token (PAT from bot account or personal account) with public_repo scope'
     required: true
+  database-url:
+    description: 'PostgreSQL connection string for wishlists database'
+    required: true
+  wishlist-id:
+    description: 'ID of the wishlist to process (GitHub issue number from old system)'
+    required: true
   cache-url:
     description: 'URL to refresh wishlist cache (optional)'
     required: false

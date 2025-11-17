@@ -1,26 +1,49 @@
 # manage-wishlist-actions
 
-GitHub Action that manages wishlist-related automation for projects tracked in [oss-wishlist/wishlists](https://github.com/oss-wishlist/wishlists).
+GitHub Action that manages wishlist-related automation for projects in the [Open Source Wishlist](https://oss-wishlist.com).
 
 ## What it does
 
-When an issue in the wishlists repository is labeled with `funding-yml-requested`, this action:
+When a wishlist is approved in the database (triggered via webhook or manual dispatch), this action:
 
-1. **Parses the wishlist** issue to extract project repository and maintainer information
+1. **Fetches wishlist data** from PostgreSQL database (maintainer, project repository, wishlist ID)
 2. **Checks for existing FUNDING.yml** (in `.github/` or root) and existing PRs
 3. **Creates a pull request** to add or update the FUNDING.yml with the wishlist link
 4. **Refreshes the wishlist cache** so the JSON feed is up-to-date
-5. **Tracks processing** (label + comment) to prevent duplicate PRs
+5. **Handles duplicates** by reusing existing branches and PRs when possible
+
+## Architecture
+
+- **Database**: PostgreSQL on Digital Ocean stores wishlist data
+- **Trigger**: Webhook (`repository_dispatch`) sent by your app when `approved = true` and `funding_yml = true`
+- **Action**: Queries DB, forks target repo, creates/updates FUNDING.yml, opens PR
 
 ## Usage
 
 ### Prerequisites
 
-**Important**: This action needs to create PRs in external repositories (the wishlist projects), so it requires a Personal Access Token (PAT) with appropriate permissions.
+1. **Database**: PostgreSQL connection string for the wishlists database
+2. **GitHub Token**: Personal Access Token (PAT) with `public_repo` scope
 
-#### Recommended: Create a Bot Account
+#### Database Setup
 
-For a professional appearance (PRs from `@oss-wishlist-bot` instead of your personal account):
+The action queries this PostgreSQL schema:
+```sql
+CREATE TABLE wishlists (
+  id INTEGER PRIMARY KEY,
+  repository_url TEXT NOT NULL,
+  maintainer_username VARCHAR(255) NOT NULL,
+  funding_yml BOOLEAN DEFAULT FALSE,
+  approved BOOLEAN DEFAULT FALSE,
+  ...
+);
+```
+
+Only wishlists where `approved = true` AND `funding_yml = true` will be processed.
+
+#### Bot Account Setup
+
+For professional PRs from a bot account (e.g., `@oss-wishlist-bot`):
 
 1. **Create a new GitHub account**
    - Sign up at https://github.com/signup
@@ -54,54 +77,74 @@ For a professional appearance (PRs from `@oss-wishlist-bot` instead of your pers
    - Value: Paste the token from step 3
    - Click **Add secret**
 
-**Result**: All PRs and comments will appear to come from `@oss-wishlist-bot` instead of a personal account.
+5. **Add secrets to the repository**
+   - In the repository where the workflow runs (e.g., `oss-wishlist/wishlists`), go to **Settings** → **Secrets and variables** → **Actions**
+   - Add `WISHLIST_BOT_TOKEN`: the PAT from step 4
+   - Add `DATABASE_URL`: your PostgreSQL connection string (e.g., `postgresql://user:pass@host:port/db`)
 
-#### Alternative: Use Your Personal Account
+### Workflow Setup
 
-If you prefer, you can use your personal account token:
-1. Create a PAT from your account with `public_repo` scope
-2. Store as `WISHLIST_BOT_TOKEN` secret
-3. PRs will be created as you (@emmairwin)
-
-### In the wishlists repository
-
-Add this workflow to `.github/workflows/manage-wishlist-actions.yml`:
+Add this workflow to `.github/workflows/manage-wishlist-actions.yml` in your repository:
 
 ```yaml
 name: Manage Wishlist Actions
 
 on:
-   issues:
-      # Run only when labels change to reduce duplicate triggers
-      types: [labeled]
+  # Triggered by your app via webhook when a wishlist is approved
+  repository_dispatch:
+    types: [wishlist-approved]
+  
+  # Manual trigger for testing
+  workflow_dispatch:
+    inputs:
+      wishlist_id:
+        description: 'Wishlist ID to process'
+        required: true
+        type: number
 
 jobs:
   manage-wishlist:
-      # Only run for issues that have been approved
-      if: contains(github.event.issue.labels.*.name, 'approved-wishlist')
     runs-on: ubuntu-latest
-      concurrency:
-         group: manage-wishlist-${{ github.event.issue.number }}
-         cancel-in-progress: true
     
     permissions:
-      issues: write
       contents: read
-    
+      
     steps:
       - name: Manage Wishlist Actions
-        uses: oss-wishlist/manage-wishlist-actions@v1.1.1
+        uses: oss-wishlist/manage-wishlist-actions@v2
         with:
           github-token: ${{ secrets.WISHLIST_BOT_TOKEN }}
+          database-url: ${{ secrets.DATABASE_URL }}
+          wishlist-id: ${{ github.event.client_payload.wishlist_id || github.event.inputs.wishlist_id }}
 ```
 
-**Note**: The default `GITHUB_TOKEN` will not work because it only has permissions for the wishlists repository, not the external project repositories.
+### Triggering from Your App
 
-### Inputs
+When a wishlist is approved in your database, send a webhook to GitHub:
+
+```javascript
+fetch('https://api.github.com/repos/oss-wishlist/wishlists/dispatches', {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${GITHUB_TOKEN}`,
+    'Accept': 'application/vnd.github+json',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    event_type: 'wishlist-approved',
+    client_payload: { wishlist_id: 123 }
+  })
+});
+```
+
+See [WEBHOOK_GUIDE.md](./WEBHOOK_GUIDE.md) for complete examples.### Inputs
 
 | Input | Description | Required | Default |
 |-------|-------------|----------|---------|
-| `github-token` | Personal Access Token with `public_repo` scope (cannot use default `GITHUB_TOKEN`) | Yes | N/A |
+| `github-token` | Personal Access Token with `public_repo` scope | Yes | N/A |
+| `database-url` | PostgreSQL connection string | Yes | N/A |
+| `wishlist-id` | Wishlist ID to process (from webhook or manual input) | Yes | N/A |
+| `cache-url` | URL to refresh wishlist cache | No | (staging URL) |
 
 ### Outputs
 
@@ -147,17 +190,21 @@ act issues -e test-event.json
 
 ## How it works
 
-### Issue parsing
+### Data fetching
 
-The action looks for wishlist data in this order:
+The action connects to PostgreSQL and queries:
+```sql
+SELECT id, repository_url, maintainer_username, funding_yml, approved
+FROM wishlists
+WHERE id = $1 AND approved = true
+LIMIT 1
+```
 
-1. **Check comments**: Look for the most recent comment starting with "📝 Wishlist Updated"
-2. **Fallback to issue body**: If no update comments exist, parse the issue body
+It verifies:
+- Wishlist exists and is approved
+- `funding_yml = true` (maintainer requested FUNDING.yml PR)
 
-It extracts:
-- `### Maintainer GitHub Username` → maintainer handle
-- `### Project Repository` → target repository URL
-- Issue number → constructs `https://oss-wishlist.com/oss-wishlist-website/fullfill?issue=<number>` for FUNDING.yml
+Then constructs the fulfill URL: `https://oss-wishlist.com/oss-wishlist-website/fullfill?issue={id}`
 
 ### Fork-based PR workflow
 
@@ -172,15 +219,13 @@ This is the standard open-source contribution workflow and doesn't require the b
 
 ### Idempotency
 
-The action tracks processed issues using:
-- A label: `funding-yml-processed`
-- A hidden HTML comment: `<!-- funding-yml-pr: <url> -->`
+The action prevents duplicates by:
+- Using deterministic branch names per wishlist ID: `add-wishlist-funding-{id}`
+- Reusing existing branches and PRs if they already exist
+- Checking if the wishlist URL is already in FUNDING.yml before creating a PR
+- Removing old wishlist URLs when updating (only keeps the current one)
 
-If either is present, the action skips processing.
-
-Additional safeguards:
-- The workflow uses GitHub Actions concurrency keyed by issue number to avoid parallel duplicate runs
-- PRs include the wishlist issue URL in the body; the action checks existing PRs (open/closed) from the bot for the same URL and reuses them if found
+No label or comment tracking is needed since the database is the source of truth.
 
 ### Error handling
 

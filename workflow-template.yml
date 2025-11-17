@@ -4,21 +4,23 @@
 name: Manage Wishlist Actions
 
 on:
-  issues:
-    # Run only when labels change to reduce duplicate triggers
-    types: [labeled]
+  # Triggered by your app via webhook when a wishlist is approved
+  repository_dispatch:
+    types: [wishlist-approved]
+  
+  # Manual trigger for testing
+  workflow_dispatch:
+    inputs:
+      wishlist_id:
+        description: 'Wishlist ID to process'
+        required: true
+        type: number
 
 jobs:
   manage-wishlist:
-    concurrency:
-      group: manage-wishlist-${{ github.event.issue.number }}
-      cancel-in-progress: true
-    # Only run for issues that have been approved
-    if: contains(github.event.issue.labels.*.name, 'approved-wishlist')
     runs-on: ubuntu-latest
     
     permissions:
-      issues: write        # To add labels and comments to wishlists issues
       contents: read       # To read repository content
       
     steps:
@@ -28,6 +30,9 @@ jobs:
           # IMPORTANT: Use a PAT with 'public_repo' scope stored in secrets
           # The default GITHUB_TOKEN cannot create PRs in other repositories
           github-token: ${{ secrets.WISHLIST_BOT_TOKEN }}
+          # PostgreSQL connection string for wishlists database
+          database-url: ${{ secrets.DATABASE_URL }}
+          # Wishlist ID comes from webhook payload or manual input
+          wishlist-id: ${{ github.event.client_payload.wishlist_id || github.event.inputs.wishlist_id }}
           # Optional: URL to refresh wishlist cache after PR creation
-          # Default is staging URL, change to production when ready
           cache-url: 'https://urchin-app-bozjb.ondigitalocean.app/api/wishlists?refresh=true'

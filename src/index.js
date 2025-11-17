@@ -1,55 +1,59 @@
 const core = require('@actions/core');
 const github = require('@actions/github');
 const yaml = require('js-yaml');
+const { Client } = require('pg');
 
 /**
- * Parse issue body or comments to extract wishlist information
- * @param {object} octokit - GitHub API client
- * @param {object} issue - The issue object
- * @returns {object} Parsed data with maintainer, repository, and wishlistUrl
+ * Fetch wishlist data from PostgreSQL database
+ * @param {string} databaseUrl - PostgreSQL connection string
+ * @param {number} wishlistId - Wishlist ID (GitHub issue number)
+ * @returns {object} Wishlist data with maintainer, repository, and wishlistUrl
  */
-async function parseIssueData(octokit, issue) {
-  let sourceText = issue.body;
+async function fetchWishlistFromDatabase(databaseUrl, wishlistId) {
+  const client = new Client({ connectionString: databaseUrl });
   
-  // Fetch all comments to check for updates
-  const { data: comments } = await octokit.rest.issues.listComments({
-    owner: github.context.repo.owner,
-    repo: github.context.repo.repo,
-    issue_number: issue.number
-  });
-  
-  // Filter for wishlist update comments (starting with "📝 Wishlist Updated")
-  const wishlistUpdates = comments.filter(comment => 
-    comment.body.startsWith('📝 Wishlist Updated')
-  );
-  
-  // If there are wishlist updates, use the most recent one
-  if (wishlistUpdates.length > 0) {
-    sourceText = wishlistUpdates[wishlistUpdates.length - 1].body;
-    core.info(`Found ${wishlistUpdates.length} wishlist update(s). Using the most recent one.`);
-  } else {
-    core.info('No wishlist updates found. Using issue body.');
+  try {
+    await client.connect();
+    core.info(`Connected to database, fetching wishlist ID: ${wishlistId}`);
+    
+    const query = `
+      SELECT 
+        id,
+        repository_url,
+        maintainer_username,
+        funding_yml,
+        approved
+      FROM wishlists
+      WHERE id = $1 AND approved = true
+      LIMIT 1
+    `;
+    
+    const result = await client.query(query, [wishlistId]);
+    
+    if (result.rows.length === 0) {
+      throw new Error(`Wishlist ID ${wishlistId} not found or not approved in database`);
+    }
+    
+    const wishlist = result.rows[0];
+    
+    // Ensure funding_yml is requested
+    if (!wishlist.funding_yml) {
+      throw new Error(`Wishlist ID ${wishlistId} does not have funding_yml=true`);
+    }
+    
+    core.info(`Found wishlist: maintainer=${wishlist.maintainer_username}, repo=${wishlist.repository_url}`);
+    
+    // Construct the wishlist fulfill URL
+    const wishlistUrl = `https://oss-wishlist.com/oss-wishlist-website/fullfill?issue=${wishlist.id}`;
+    
+    return {
+      maintainer: wishlist.maintainer_username,
+      repository: wishlist.repository_url,
+      wishlistUrl
+    };
+  } finally {
+    await client.end();
   }
-  
-  // Extract maintainer username
-  const maintainerMatch = sourceText.match(/###\s*Maintainer GitHub Username\s*\n\s*(.+)/i);
-  const maintainer = maintainerMatch ? maintainerMatch[1].trim() : null;
-  
-  // Extract project repository
-  const repoMatch = sourceText.match(/###\s*Project Repository\s*\n\s*(.+)/i);
-  const repository = repoMatch ? repoMatch[1].trim() : null;
-  
-  // Remove markdown link formatting if present
-  const repoUrl = repository ? repository.replace(/\[(.+)\]\((.+)\)/, '$2') : null;
-  
-  // Wishlist URL should be the oss-wishlist fulfill URL, keyed by the wishlist issue number
-  const wishlistUrl = `https://oss-wishlist.com/fullfill?issue=${issue.number}`;
-  
-  if (!maintainer || !repoUrl) {
-    throw new Error(`Failed to parse required fields. Maintainer: ${maintainer}, Repository: ${repoUrl}`);
-  }
-  
-  return { maintainer, repository: repoUrl, wishlistUrl };
 }
 
 /**
@@ -466,35 +470,20 @@ ${error.stack}
 async function run() {
   try {
     const token = core.getInput('github-token', { required: true });
+    const databaseUrl = core.getInput('database-url', { required: true });
+    const wishlistId = parseInt(core.getInput('wishlist-id', { required: true }), 10);
     const cacheUrl = core.getInput('cache-url', { required: false }) || 'https://urchin-app-bozjb.ondigitalocean.app/api/wishlists?refresh=true';
     const octokit = github.getOctokit(token);
     
-    const issue = github.context.payload.issue;
-    
-    if (!issue) {
-      core.setFailed('No issue found in context');
+    if (!wishlistId || isNaN(wishlistId)) {
+      core.setFailed('Invalid wishlist-id provided');
       return;
     }
     
-    // Defensive gating: ensure the issue has been approved before proceeding
-    const labels = (issue.labels || []).map(l => typeof l === 'string' ? l : l.name);
-    if (!labels.includes('approved-wishlist')) {
-      core.info('Issue does not have approved-wishlist label. Skipping.');
-      core.setOutput('status', 'skipped');
-      return;
-    }
+    core.info(`Processing wishlist ID: ${wishlistId}`);
     
-    core.info(`Processing issue #${issue.number}: ${issue.title}`);
-    
-    // Check if already processed
-    if (await isAlreadyProcessed(octokit, issue.number)) {
-      core.info('Issue already processed. Skipping.');
-      core.setOutput('status', 'skipped');
-      return;
-    }
-    
-    // Parse issue data
-    const data = await parseIssueData(octokit, issue);
+    // Fetch wishlist data from database
+    const data = await fetchWishlistFromDatabase(databaseUrl, wishlistId);
     core.info(`Parsed data: Maintainer=${data.maintainer}, Repo=${data.repository}`);
   core.info(`Wishlist URL to add: ${data.wishlistUrl}`);
     
@@ -514,18 +503,15 @@ async function run() {
         const customArray = Array.isArray(fundingData.custom) ? fundingData.custom : [fundingData.custom];
         if (customArray.includes(data.wishlistUrl)) {
           core.info('Wishlist URL already exists in FUNDING.yml. Skipping PR creation.');
-          await markAsProcessed(octokit, issue.number, `${data.repository} (already has wishlist link)`);
           core.setOutput('status', 'skipped');
+          core.setOutput('pr-url', `${data.repository} (already has wishlist link)`);
           return;
         }
       }
     }
     
     // Create pull request
-  const prUrl = await createPullRequest(octokit, owner, repo, data, fundingFile, issue.number);
-    
-    // Mark issue as processed
-    await markAsProcessed(octokit, issue.number, prUrl);
+    const prUrl = await createPullRequest(octokit, owner, repo, data, fundingFile, wishlistId);
     
     // Refresh wishlist cache
     try {
