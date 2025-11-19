@@ -42153,6 +42153,35 @@ async function fetchWishlistFromDatabase(databaseUrl, wishlistId) {
 }
 
 /**
+ * Mark wishlist as processed in the database
+ * @param {string} databaseUrl - PostgreSQL connection string
+ * @param {number} wishlistId - Wishlist ID
+ * @param {string} prUrl - Pull request URL created
+ */
+async function markWishlistProcessed(databaseUrl, wishlistId, prUrl) {
+  const client = new Client({ connectionString: databaseUrl });
+  
+  try {
+    await client.connect();
+    core.info(`Marking wishlist ${wishlistId} as processed in database`);
+    
+    const query = `
+      UPDATE wishlists
+      SET funding_yml_processed = true
+      WHERE id = $1
+    `;
+    
+    await client.query(query, [wishlistId]);
+    core.info(`✅ Database updated: funding_yml_processed=true for wishlist ${wishlistId}`);
+  } catch (error) {
+    core.warning(`Failed to update database: ${error.message}`);
+    // Don't fail the action if DB update fails - PR was already created
+  } finally {
+    await client.end();
+  }
+}
+
+/**
  * Parse owner and repo from a GitHub URL
  * @param {string} repoUrl - GitHub repository URL
  * @returns {object} Owner and repo name
@@ -42608,6 +42637,9 @@ async function run() {
     
     // Create pull request
     const prUrl = await createPullRequest(octokit, owner, repo, data, fundingFile, wishlistId);
+    
+    // Mark as processed in database
+    await markWishlistProcessed(databaseUrl, wishlistId, prUrl);
     
     // Refresh wishlist cache
     try {

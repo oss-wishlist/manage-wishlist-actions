@@ -35,11 +35,19 @@ CREATE TABLE wishlists (
   maintainer_username VARCHAR(255) NOT NULL,
   funding_yml BOOLEAN DEFAULT FALSE,
   approved BOOLEAN DEFAULT FALSE,
+  funding_yml_processed BOOLEAN DEFAULT FALSE,
   ...
 );
 ```
 
-Only wishlists where `approved = true` AND `funding_yml = true` will be processed.
+The action will:
+- Only process wishlists where `approved = true` AND `funding_yml = true`
+- Automatically set `funding_yml_processed = true` after creating a PR
+
+**Required migration:**
+```sql
+ALTER TABLE wishlists ADD COLUMN funding_yml_processed BOOLEAN DEFAULT FALSE;
+```
 
 #### Bot Account Setup
 
@@ -84,34 +92,26 @@ For professional PRs from a bot account (e.g., `@oss-wishlist-bot`):
 
 ### Workflow Setup
 
-Add this workflow to `.github/workflows/manage-wishlist-actions.yml` in your repository:
+Add this workflow to `.github/workflows/manage-wishlist-actions.yml`:
 
 ```yaml
 name: Manage Wishlist Actions
 
 on:
-  # Triggered by your app via webhook when a wishlist is approved
   repository_dispatch:
     types: [wishlist-approved]
-  
-  # Manual trigger for testing
   workflow_dispatch:
     inputs:
       wishlist_id:
-        description: 'Wishlist ID to process'
+        description: 'Wishlist ID'
         required: true
         type: number
 
 jobs:
   manage-wishlist:
     runs-on: ubuntu-latest
-    
-    permissions:
-      contents: read
-      
     steps:
-      - name: Manage Wishlist Actions
-        uses: oss-wishlist/manage-wishlist-actions@v2
+      - uses: oss-wishlist/manage-wishlist-actions@v2
         with:
           github-token: ${{ secrets.WISHLIST_BOT_TOKEN }}
           database-url: ${{ secrets.DATABASE_URL }}
@@ -120,7 +120,7 @@ jobs:
 
 ### Triggering from Your App
 
-When a wishlist is approved in your database, send a webhook to GitHub:
+Your website should send a webhook when updating `approved = true` AND `funding_yml = true`:
 
 ```javascript
 fetch('https://api.github.com/repos/oss-wishlist/wishlists/dispatches', {
